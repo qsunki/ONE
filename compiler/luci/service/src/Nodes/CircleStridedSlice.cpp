@@ -93,18 +93,38 @@ struct StridedSliceContext
     params.shrink_axis_mask = node->shrink_axis_mask();
 
     input = loco::must_cast<luci::CircleNode *>(node->input());
-    begin = loco::must_cast<luci::CircleConst *>(node->begin());
-    end = loco::must_cast<luci::CircleConst *>(node->end());
-    strides = loco::must_cast<luci::CircleConst *>(node->strides());
+    begin = dynamic_cast<luci::CircleConst *>(node->begin());
+    end = dynamic_cast<luci::CircleConst *>(node->end());
+    strides = dynamic_cast<luci::CircleConst *>(node->strides());
+    dummy.dtype(loco::DataType::S32);
+    dummy.shape({0});
+    dummy.shape_status(luci::ShapeStatus::VALID);
 
     loco::TensorShape input_shape = circle_shape(input);
     input_dims = input_shape.rank();
+
+    if (begin == nullptr)
+    {
+      auto begin_node = loco::must_cast<luci::CircleNode *>(node->begin());
+      begin = &dummy;
+      int32_t unknown_range = begin_node->dim(0).known() ? begin_node->dim(0).value() : input_dims;
+
+      for (int32_t i = 0; i < unknown_range; ++i)
+      {
+        input_shape.dim(i).unset();
+      }
+    }
+
+    assert(begin->size<S32>() <= input_dims);
+    assert(end->size<S32>() <= input_dims);
+    assert(strides->size<S32>() <= input_dims);
   }
   StridedSliceParams params;
   luci::CircleNode *input = nullptr;
   luci::CircleConst *begin = nullptr;
   luci::CircleConst *end = nullptr;
   luci::CircleConst *strides = nullptr;
+  luci::CircleConst dummy;
 
   // Equivalent input shape after adding axis according to new_axis_mask.
   loco::TensorShape effective_input_shape;
@@ -383,20 +403,9 @@ loco::TensorShape Algorithm::visit(const luci::CircleStridedSlice *node)
 {
   loco::TensorShape output_shape;
 
-  auto input_node = loco::must_cast<luci::CircleNode *>(node->input());
-
-  auto begin_node = dynamic_cast<luci::CircleConst *>(node->begin());
-  auto end_node = dynamic_cast<luci::CircleConst *>(node->end());
-  auto strides_node = dynamic_cast<luci::CircleConst *>(node->strides());
-  if (strides_node == nullptr)
-  {
-    INTERNAL_EXN("StridedSlice strides node are not Constant");
-  }
-  if (begin_node == nullptr || end_node == nullptr)
-  {
-    output_shape.rank(input_node->rank());
-    return output_shape;
-  }
+  auto begin_node = loco::must_cast<luci::CircleNode *>(node->input());
+  auto end_node = loco::must_cast<luci::CircleNode *>(node->input());
+  auto strides_node = loco::must_cast<luci::CircleNode *>(node->input());
 
   LUCI_ASSERT(begin_node->dtype() == S32, "Only support S32 for begin_node");
   LUCI_ASSERT(end_node->dtype() == S32, "Only support S32 for end_node");
@@ -405,12 +414,6 @@ loco::TensorShape Algorithm::visit(const luci::CircleStridedSlice *node)
   LUCI_ASSERT(begin_node->rank() == 1, "Only support rank 1 for begin_node");
   LUCI_ASSERT(end_node->rank() == 1, "Only support rank 1 for end_node");
   LUCI_ASSERT(strides_node->rank() == 1, "Only support rank 1 for strides_node");
-
-  loco::TensorShape input_shape = circle_shape(input_node);
-
-  assert(begin_node->size<S32>() <= input_shape.rank());
-  assert(end_node->size<S32>() <= input_shape.rank());
-  assert(strides_node->size<S32>() <= input_shape.rank());
 
   StridedSliceContext op_context(node);
   auto op_params = BuildStridedSliceParams(&op_context);
